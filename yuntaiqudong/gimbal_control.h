@@ -60,6 +60,12 @@ void GimbalControl_UpdateVisionTrack(GimbalControl *control,
 void GimbalControl_UpdateAim(GimbalControl *control, GimbalPoint target_px,
     GimbalPoint laser_px, GimbalPoint image_center_px, float yaw_deg_per_px,
     float pitch_deg_per_px, float dt_sec);
+/*
+ * 输入目标点减激光点的平面距离误差，X 向右、Y 向下为正，单位为 mm。
+ * 函数按固定目标距离换算为角度误差后进入瞄准 PID。
+ */
+void GimbalControl_UpdateAimDistanceError(GimbalControl *control,
+    float error_x_mm, float error_y_mm, float dt_sec);
 void GimbalControl_UpdateImuStabilize(GimbalControl *control,
     GimbalAngle stable_reference, GimbalAngle imu_angle, float dt_sec);
 void GimbalControl_UpdateSpeedSmooth(GimbalControl *control,

@@ -1,5 +1,6 @@
 #include "gimbal_control.h"
 
+#include <math.h>
 #include <stdint.h>
 
 /*
@@ -10,6 +11,12 @@
 #define GIMBAL_CONTROL_DEFAULT_MIN_SPEED_DEG_S   (1.0f)
 /* PID 角速度命令的默认软件上限为 360 deg/s，即每秒 1 圈。 */
 #define GIMBAL_CONTROL_DEFAULT_MAX_SPEED_DEG_S   (360.0f)
+/* 两轴 PID 的初始角度死区为 0.5°，死区内误差按 0 处理。 */
+#define GIMBAL_CONTROL_DEFAULT_DEADBAND_DEG      (0.5f)
+/* 激光笔到目标平面的水平距离固定按 1050 mm（1.05 m）计算。 */
+#define GIMBAL_CONTROL_TARGET_DISTANCE_MM        (1050.0f)
+/* 弧度乘以 180/π 后转换为角度。 */
+#define GIMBAL_CONTROL_RAD_TO_DEG                (57.2957795f)
 
 static float GimbalControl_Abs(float value)
 {
@@ -111,6 +118,10 @@ void GimbalControl_Init(GimbalControl *control)
     /* 三个 0.0f 分别表示 Kp、Ki、Kd 初始均关闭，由 main.c 随后写入。 */
     PID_Init(&control->yaw_pid, 0.0f, 0.0f, 0.0f);
     PID_Init(&control->pitch_pid, 0.0f, 0.0f, 0.0f);
+    PID_SetDeadband(
+        &control->yaw_pid, GIMBAL_CONTROL_DEFAULT_DEADBAND_DEG);
+    PID_SetDeadband(
+        &control->pitch_pid, GIMBAL_CONTROL_DEFAULT_DEADBAND_DEG);
     control->min_effective_speed_deg_s =
         GIMBAL_CONTROL_DEFAULT_MIN_SPEED_DEG_S;
     control->max_speed_deg_s = GIMBAL_CONTROL_DEFAULT_MAX_SPEED_DEG_S;
@@ -301,6 +312,35 @@ void GimbalControl_UpdateAim(GimbalControl *control, GimbalPoint target_px,
      */
     yaw_error_deg = (target_px.x - reference_px.x) * yaw_deg_per_px;
     pitch_error_deg = (reference_px.y - target_px.y) * pitch_deg_per_px;
+    GimbalControl_UpdateByAngleError(
+        control, yaw_error_deg, pitch_error_deg, dt_sec);
+}
+
+void GimbalControl_UpdateAimDistanceError(GimbalControl *control,
+    float error_x_mm, float error_y_mm, float dt_sec)
+{
+    float yaw_error_deg;
+    float pitch_error_deg;
+
+    if (control == 0) {
+        return;
+    }
+
+    GimbalControl_SetMode(control, GIMBAL_CONTROL_MODE_AIM);
+
+    /*
+     * MaixCAM2 误差定义为“目标点 - 激光点”，目标平面距离为 1050 mm：
+     *   yaw_error   = atan2(error_x_mm, 1050) * 180/π
+     *   pitch_error = -atan2(error_y_mm, 1050) * 180/π
+     * 屏幕 Y 轴向下为正，因此 Pitch 沿用像素瞄准接口的反号约定。
+     */
+    yaw_error_deg =
+        atan2f(error_x_mm, GIMBAL_CONTROL_TARGET_DISTANCE_MM) *
+        GIMBAL_CONTROL_RAD_TO_DEG;
+    pitch_error_deg =
+        -atan2f(error_y_mm, GIMBAL_CONTROL_TARGET_DISTANCE_MM) *
+        GIMBAL_CONTROL_RAD_TO_DEG;
+
     GimbalControl_UpdateByAngleError(
         control, yaw_error_deg, pitch_error_deg, dt_sec);
 }

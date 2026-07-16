@@ -100,6 +100,7 @@ SYSCTL.clockTreeEn = true;
 
 UART1.$name                            = "UART_VISION";
 UART1.targetBaudRate                   = 115200;
+UART1.enabledInterrupts                = ["RX"];
 UART1.peripheral.$assign               = "UART0";
 UART1.peripheral.rxPin.$assign         = "PA1";
 UART1.peripheral.txPin.$assign         = "PA0";
@@ -115,6 +116,7 @@ UART1.rxPinConfig.$name                = "ti_driverlib_gpio_GPIOPinGeneric1";
 
 UART2.$name                            = "UART_PC";
 UART2.targetBaudRate                   = 115200;
+UART2.enabledInterrupts                = ["RX"];
 UART2.peripheral.$assign               = "UART1";
 UART2.peripheral.rxPin.$assign         = "PA18";
 UART2.peripheral.txPin.$assign         = "PA17";
