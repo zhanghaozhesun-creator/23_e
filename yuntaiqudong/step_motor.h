@@ -4,25 +4,25 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define STEP_MOTOR_ID_YAW     (0U)
-#define STEP_MOTOR_ID_PITCH   (1U)
-#define STEP_MOTOR_COUNT      (2U)
+#define STEP_MOTOR_ID_YAW     (0U)  /* 0 号轴：Yaw 水平旋转轴。 */
+#define STEP_MOTOR_ID_PITCH   (1U)  /* 1 号轴：Pitch 俯仰轴。 */
+#define STEP_MOTOR_COUNT      (2U)  /* 驱动中共维护 2 个电机轴。 */
 
 /* 方向约定：顺时针为正方向，逆时针为负方向。 */
 typedef enum {
-    STEP_MOTOR_DIR_CW = 0,
-    STEP_MOTOR_DIR_CCW
+    STEP_MOTOR_DIR_CW = 0,  /* 0：顺时针，位置和角度增加。 */
+    STEP_MOTOR_DIR_CCW      /* 1：逆时针，位置和角度减小。 */
 } StepMotorDir;
 
 /* 驱动层统一维护状态，业务层不要直接启停底层定时器。 */
 typedef enum {
-    STEP_MOTOR_STATE_IDLE = 0,
-    STEP_MOTOR_STATE_RUNNING,
-    STEP_MOTOR_STATE_MOVING,
-    STEP_MOTOR_STATE_ACCEL,
-    STEP_MOTOR_STATE_DECEL,
-    STEP_MOTOR_STATE_STOPPING,
-    STEP_MOTOR_STATE_ERROR
+    STEP_MOTOR_STATE_IDLE = 0,  /* 0：空闲，PWM 已停止。 */
+    STEP_MOTOR_STATE_RUNNING,   /* 1：连续运行。 */
+    STEP_MOTOR_STATE_MOVING,    /* 2：按指定步数运行。 */
+    STEP_MOTOR_STATE_ACCEL,     /* 3：预留的加速状态。 */
+    STEP_MOTOR_STATE_DECEL,     /* 4：预留的减速状态。 */
+    STEP_MOTOR_STATE_STOPPING,  /* 5：预留的停止过渡状态。 */
+    STEP_MOTOR_STATE_ERROR      /* 6：参数或急停导致的错误状态。 */
 } StepMotorState;
 
 /* 初始化后，当前机械位置被视为 0 度位置。 */

@@ -2,11 +2,18 @@
 
 #include <stdint.h>
 
+/*
+ * 本文件的通用数值约定：指针与 0 比较表示空指针检查；速度 0.0f
+ * 表示停机命令；有符号速度大于等于 0 表示顺时针，小于 0 表示逆时针。
+ */
+/* 低于 1 deg/s 的命令视为无效，以避免电机在低频下抖动或失步。 */
 #define GIMBAL_CONTROL_DEFAULT_MIN_SPEED_DEG_S   (1.0f)
+/* PID 角速度命令的默认软件上限为 360 deg/s，即每秒 1 圈。 */
 #define GIMBAL_CONTROL_DEFAULT_MAX_SPEED_DEG_S   (360.0f)
 
 static float GimbalControl_Abs(float value)
 {
+    /* 0.0f 是正负数的分界，返回速度或误差的绝对值。 */
     return (value < 0.0f) ? -value : value;
 }
 
@@ -26,14 +33,17 @@ static float GimbalControl_Clamp(
 
 static uint32_t GimbalControl_ToSpeedUint(float speed_deg_s)
 {
+    /* 非正速度统一转换为 0，底层把 0 解释为停止。 */
     if (speed_deg_s <= 0.0f) {
         return 0U;
     }
 
+    /* 超出 uint32_t 范围时饱和到 UINT32_MAX，防止强制转换回绕。 */
     if (speed_deg_s >= (float) UINT32_MAX) {
         return UINT32_MAX;
     }
 
+    /* 正数加 0.5f 后取整，实现四舍五入而不是直接截断。 */
     return (uint32_t) (speed_deg_s + 0.5f);
 }
 
@@ -55,6 +65,7 @@ static void GimbalControl_ApplyAxisSpeed(uint8_t id, float speed_deg_s,
     }
 
     abs_speed = GimbalControl_Clamp(abs_speed, min_speed_deg_s, max_speed_deg_s);
+    /* 0.0f 归入顺时针分支；实际零速已被最小有效速度判断拦截。 */
     dir = (speed_deg_s >= 0.0f) ? STEP_MOTOR_DIR_CW : STEP_MOTOR_DIR_CCW;
 
     /* 反向前先停 PWM，避免底层忙状态下拒绝修改 DIR。 */
@@ -80,6 +91,11 @@ static void GimbalControl_UpdateByAngleError(GimbalControl *control,
     float yaw_speed;
     float pitch_speed;
 
+    /*
+     * PID_Update 内部使用 e = target - current。
+     * 此处令 target=0、current=-angle_error，因此 e=angle_error；
+     * PID 输出 yaw_speed/pitch_speed 的单位为 deg/s。
+     */
     yaw_speed = PID_Update(&control->yaw_pid, 0.0f, -yaw_error_deg, dt_sec);
     pitch_speed =
         PID_Update(&control->pitch_pid, 0.0f, -pitch_error_deg, dt_sec);
@@ -92,6 +108,7 @@ void GimbalControl_Init(GimbalControl *control)
         return;
     }
 
+    /* 三个 0.0f 分别表示 Kp、Ki、Kd 初始均关闭，由 main.c 随后写入。 */
     PID_Init(&control->yaw_pid, 0.0f, 0.0f, 0.0f);
     PID_Init(&control->pitch_pid, 0.0f, 0.0f, 0.0f);
     control->min_effective_speed_deg_s =
@@ -143,12 +160,14 @@ void GimbalControl_SetPitchPid(
 void GimbalControl_SetSpeedLimit(
     GimbalControl *control, float min_speed_deg_s, float max_speed_deg_s)
 {
+    /* 最大速度必须大于 0.0f，否则该速度区间无效。 */
     if ((control == 0) || (max_speed_deg_s <= 0.0f)) {
         return;
     }
 
     min_speed_deg_s = GimbalControl_Abs(min_speed_deg_s);
     if (min_speed_deg_s >= max_speed_deg_s) {
+        /* 最小值不小于最大值时，以 0.0f 关闭最小有效速度门槛。 */
         min_speed_deg_s = 0.0f;
     }
 
@@ -231,10 +250,17 @@ void GimbalControl_UpdateVisionTrack(GimbalControl *control,
 
     GimbalControl_SetMode(control, GIMBAL_CONTROL_MODE_VISION_TRACK);
     if ((!target_px.valid) || (!image_center_px.valid)) {
+        /* 两个 0.0f 分别让 Yaw、Pitch 立即停止。 */
         GimbalControl_ApplySpeed(control, 0.0f, 0.0f);
         return;
     }
 
+    /*
+     * 图像像素误差转换为角度误差：
+     * yaw_error_deg   = (target_x - center_x) * yaw_deg_per_px
+     * pitch_error_deg = (center_y - target_y) * pitch_deg_per_px
+     * Pitch 使用相反的像素差顺序，是因为图像坐标 Y 轴通常向下为正。
+     */
     yaw_error_deg = (target_px.x - image_center_px.x) * yaw_deg_per_px;
     pitch_error_deg = (image_center_px.y - target_px.y) * pitch_deg_per_px;
     GimbalControl_UpdateByAngleError(
@@ -255,16 +281,24 @@ void GimbalControl_UpdateAim(GimbalControl *control, GimbalPoint target_px,
 
     GimbalControl_SetMode(control, GIMBAL_CONTROL_MODE_AIM);
     if (!target_px.valid) {
+        /* 两个 0.0f 分别让 Yaw、Pitch 立即停止。 */
         GimbalControl_ApplySpeed(control, 0.0f, 0.0f);
         return;
     }
 
     reference_px = laser_px.valid ? laser_px : image_center_px;
     if (!reference_px.valid) {
+        /* 两个 0.0f 分别让 Yaw、Pitch 立即停止。 */
         GimbalControl_ApplySpeed(control, 0.0f, 0.0f);
         return;
     }
 
+    /*
+     * 瞄准模式转换公式与视觉跟踪相同，但 reference 为激光点；
+     * 激光点无效时退化为图像中心点：
+     * yaw_error_deg   = (target_x - reference_x) * yaw_deg_per_px
+     * pitch_error_deg = (reference_y - target_y) * pitch_deg_per_px
+     */
     yaw_error_deg = (target_px.x - reference_px.x) * yaw_deg_per_px;
     pitch_error_deg = (reference_px.y - target_px.y) * pitch_deg_per_px;
     GimbalControl_UpdateByAngleError(

@@ -7,12 +7,12 @@
 #include "step_motor.h"
 
 typedef enum {
-    GIMBAL_CONTROL_MODE_IDLE = 0,
-    GIMBAL_CONTROL_MODE_ANGLE,
-    GIMBAL_CONTROL_MODE_VISION_TRACK,
-    GIMBAL_CONTROL_MODE_AIM,
-    GIMBAL_CONTROL_MODE_IMU_STABILIZE,
-    GIMBAL_CONTROL_MODE_SPEED_SMOOTH
+    GIMBAL_CONTROL_MODE_IDLE = 0,       /* 0：空闲并停止两轴。 */
+    GIMBAL_CONTROL_MODE_ANGLE,          /* 1：角度闭环。 */
+    GIMBAL_CONTROL_MODE_VISION_TRACK,   /* 2：视觉目标跟踪。 */
+    GIMBAL_CONTROL_MODE_AIM,            /* 3：激光点瞄准。 */
+    GIMBAL_CONTROL_MODE_IMU_STABILIZE,  /* 4：IMU 增稳。 */
+    GIMBAL_CONTROL_MODE_SPEED_SMOOTH    /* 5：速度平滑闭环。 */
 } GimbalControlMode;
 
 typedef struct {

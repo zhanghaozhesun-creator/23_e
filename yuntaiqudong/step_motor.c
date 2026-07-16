@@ -2,11 +2,22 @@
 
 #include "ti_msp_dl_config.h"
 
+/*
+ * 本文件的通用数值约定：有符号角度/步数以 0 为机械零点，正数为顺时针、
+ * 负数为逆时针；无符号速度或 PWM 周期为 0 表示无有效脉冲；剩余步数为
+ * 0 在定长模式表示完成，在连续模式表示不按步数倒计时。
+ */
+/* 一整圈为 360°，用于角度与步数相互换算。 */
 #define STEP_MOTOR_DEG_PER_REV             (360U)
+/* 默认每圈 6400 步，包含驱动器细分后的脉冲数。 */
 #define STEP_MOTOR_DEFAULT_STEPS_PER_REV   (6400U)
+/* 默认限位为 uint16_t 最大值 65535°，随后由 main.c 写入实际限位。 */
 #define STEP_MOTOR_DEFAULT_LIMIT_DEG       (UINT16_MAX)
+/* PWM 最短周期为 800 个定时器时钟，限制电机最高脉冲频率。 */
 #define STEP_MOTOR_MIN_PERIOD_TICKS        (800U)
+/* PWM 最长周期为 65535 个定时器时钟，限制可输出的最低脉冲频率。 */
 #define STEP_MOTOR_MAX_PERIOD_TICKS        (65535U)
+/* 单次定长运动最多 2147483647 步，保证可安全存入 int32_t。 */
 #define STEP_MOTOR_MAX_MOVE_STEPS          ((uint32_t) INT32_MAX)
 
 typedef struct {
@@ -118,7 +129,9 @@ static bool StepMotor_IsValidId(uint8_t id)
 
 static uint32_t StepMotor_Abs32(int32_t value)
 {
+    /* 0 是方向分界；负数取绝对值，非负数保持不变。 */
     if (value < 0) {
+        /* 分两次加 1 可安全处理 INT32_MIN，避免直接取负造成有符号溢出。 */
         return ((uint32_t) (-(value + 1))) + 1U;
     }
 
@@ -154,10 +167,15 @@ static uint32_t StepMotor_SpeedToPeriod(
 {
     uint32_t period;
 
+    /* 0 step/s 没有有效 PWM 周期，返回 0 通知上层停机。 */
     if (speed_steps_per_sec == 0U) {
         return 0U;
     }
 
+    /*
+     * PWM 周期转换：period_ticks = round(timer_clock_hz / steps_per_sec)。
+     * 分子加除数的 1/2（即 /2U）用于正整数四舍五入。
+     */
     period = (uint32_t) (((uint64_t) config->timer_clock_hz +
                             (speed_steps_per_sec / 2U)) /
                          speed_steps_per_sec);
@@ -168,7 +186,12 @@ static uint32_t StepMotor_SpeedToPeriod(
 static uint32_t StepMotor_DegSpeedToSteps(
     const StepMotorConfig *config, uint32_t speed_deg_per_sec)
 {
-    /* 角速度先转换成脉冲频率，后续 PWM 只处理 steps/s。 */
+    /*
+     * PID 角速度输出转换为步进脉冲频率：
+     * steps_per_sec = round(speed_deg_per_sec * steps_per_rev / 360)。
+     * 当前默认 steps_per_rev=6400，例如 90 deg/s 对应 1600 steps/s。
+     * 分子加 360/2=180，用于正整数除法的四舍五入。
+     */
     return (uint32_t) (((uint64_t) speed_deg_per_sec *
                           config->steps_per_rev +
                       (STEP_MOTOR_DEG_PER_REV / 2U)) /
@@ -178,7 +201,12 @@ static uint32_t StepMotor_DegSpeedToSteps(
 static uint32_t StepMotor_DegAngleToSteps(
     const StepMotorConfig *config, uint32_t angle_deg)
 {
-    /* 当前库以 0 度为原点，角度命令最终都转换成相对步数。 */
+    /*
+     * 角度转换为相对步数：
+     * steps = round(angle_deg * steps_per_rev / 360)。
+     * 当前默认 steps_per_rev=6400，例如 90 deg 对应 1600 steps。
+     * 分子加 360/2=180，用于正整数除法的四舍五入。
+     */
     return (uint32_t) (((uint64_t) angle_deg * config->steps_per_rev +
                           (STEP_MOTOR_DEG_PER_REV / 2U)) /
                      STEP_MOTOR_DEG_PER_REV);
@@ -198,6 +226,7 @@ static int32_t StepMotor_GetRemainingLimitSteps(uint8_t id, StepMotorDir dir)
     /* 顺时针限位是正位置上限，逆时针限位是负位置下限。 */
     if (dir == STEP_MOTOR_DIR_CW) {
         if (position >= handle->cw_limit_steps) {
+            /* 返回 0：顺时针方向已无可运行步数。 */
             return 0;
         }
 
@@ -205,6 +234,7 @@ static int32_t StepMotor_GetRemainingLimitSteps(uint8_t id, StepMotorDir dir)
     }
 
     if (position <= -handle->ccw_limit_steps) {
+        /* 返回 0：逆时针方向已无可运行步数。 */
         return 0;
     }
 
@@ -215,12 +245,14 @@ static bool StepMotor_CanStep(uint8_t id)
 {
     StepMotorHandle *handle = &g_stepMotorHandle[id];
 
+    /* 剩余步数大于 0 才允许再产生一个步进脉冲。 */
     return (StepMotor_GetRemainingLimitSteps(id, handle->dir) > 0);
 }
 
 static void StepMotor_SetPwmDuty(const StepMotorConfig *config, uint32_t period)
 {
     DL_Timer_setLoadValue(config->timer, period);
+    /* 比较值取周期的 1/2，得到约 50% 占空比的 STEP 脉冲。 */
     DL_Timer_setCaptureCompareValue(
         config->timer, period / 2U, config->timer_cc_index);
 }
@@ -228,6 +260,7 @@ static void StepMotor_SetPwmDuty(const StepMotorConfig *config, uint32_t period)
 static void StepMotor_StopPwm(const StepMotorConfig *config)
 {
     DL_Timer_stopCounter(config->timer);
+    /* 比较值写 0U，确保停止后不再输出有效 STEP 脉冲。 */
     DL_Timer_setCaptureCompareValue(config->timer, 0U, config->timer_cc_index);
 }
 
@@ -237,6 +270,7 @@ static void StepMotor_StartPwm(uint8_t id)
     StepMotorHandle *handle = &g_stepMotorHandle[id];
     uint32_t period = StepMotor_SpeedToPeriod(config, handle->speed_steps_per_sec);
 
+    /* 周期 0U 表示速度为零或换算失败，不能启动 PWM。 */
     if (period == 0U) {
         handle->state = STEP_MOTOR_STATE_ERROR;
         return;
@@ -251,6 +285,7 @@ static void StepMotor_StopFromIsr(uint8_t id)
     StepMotorHandle *handle = &g_stepMotorHandle[id];
 
     StepMotor_StopPwm(&g_stepMotorConfig[id]);
+    /* 中断停机后剩余步数清零，表示本次定长运动已结束。 */
     handle->remain_steps = 0;
     handle->state = STEP_MOTOR_STATE_IDLE;
 }
@@ -276,6 +311,7 @@ void StepMotor_Init(uint8_t id)
 
     handle = &g_stepMotorHandle[id];
     StepMotor_StopPwm(&g_stepMotorConfig[id]);
+    /* 0 表示初始化时没有待执行的定长步数。 */
     handle->remain_steps = 0;
     /* 上电时机械位置作为角度坐标零点。 */
     handle->position_steps = 0;
@@ -285,11 +321,13 @@ void StepMotor_Init(uint8_t id)
         StepMotor_LimitDegToSteps(&g_stepMotorConfig[id], handle->cw_limit_deg);
     handle->ccw_limit_steps =
         StepMotor_LimitDegToSteps(&g_stepMotorConfig[id], handle->ccw_limit_deg);
+    /* 0 step/s 表示上电后默认不输出运动脉冲。 */
     handle->speed_steps_per_sec = 0;
     handle->state = STEP_MOTOR_STATE_IDLE;
     handle->dir = STEP_MOTOR_DIR_CW;
     handle->enabled = false;
     StepMotor_SetDir(id, STEP_MOTOR_DIR_CW);
+    /* NVIC 优先级设为 1；在 MSPM0 上数值越小，中断硬件优先级越高。 */
     NVIC_SetPriority(g_stepMotorConfig[id].timer_irqn, 1U);
     NVIC_EnableIRQ(g_stepMotorConfig[id].timer_irqn);
 }
@@ -298,6 +336,7 @@ void StepMotor_InitAll(void)
 {
     uint8_t id;
 
+    /* 从 0 号 Yaw 轴开始，依次初始化共 STEP_MOTOR_COUNT 个轴。 */
     for (id = 0U; id < STEP_MOTOR_COUNT; id++) {
         StepMotor_Init(id);
     }
@@ -422,6 +461,7 @@ void StepMotor_SetSpeed(uint8_t id, uint32_t speed_steps_per_sec)
     if ((handle->state == STEP_MOTOR_STATE_RUNNING) ||
         (handle->state == STEP_MOTOR_STATE_MOVING)) {
         period = StepMotor_SpeedToPeriod(config, speed_steps_per_sec);
+        /* 运行中把速度改为 0U 时立即停止，其余数值实时更新 PWM 周期。 */
         if (period == 0U) {
             StepMotor_Stop(id);
         } else {
@@ -469,6 +509,7 @@ void StepMotor_SetLimitDeg(uint8_t id, StepMotorDir dir, uint16_t limit_deg)
         stop_required = true;
     }
 
+    /* PRIMASK 原值为 0U 表示进入临界区前中断处于使能状态。 */
     if (primask == 0U) {
         __enable_irq();
     }
@@ -481,6 +522,7 @@ void StepMotor_SetLimitDeg(uint8_t id, StepMotorDir dir, uint16_t limit_deg)
 uint16_t StepMotor_GetLimitDeg(uint8_t id, StepMotorDir dir)
 {
     if (!StepMotor_IsValidId(id)) {
+        /* 无效轴没有可报告的限位，返回 0°。 */
         return 0U;
     }
 
@@ -503,12 +545,15 @@ void StepMotor_MoveSteps(uint8_t id, int32_t steps)
     }
 
     handle = &g_stepMotorHandle[id];
+    /* steps 等于 0 表示没有位移；忙碌时也不接受新的定长运动。 */
     if (StepMotor_IsBusy(id) || (steps == 0)) {
         return;
     }
 
+    /* 正步数选择顺时针，负步数选择逆时针。 */
     dir = (steps > 0) ? STEP_MOTOR_DIR_CW : STEP_MOTOR_DIR_CCW;
     allowed_steps = StepMotor_GetRemainingLimitSteps(id, dir);
+    /* 可运行步数小于等于 0 表示已到达或越过对应软件限位。 */
     if (allowed_steps <= 0) {
         return;
     }
@@ -542,6 +587,7 @@ void StepMotor_MoveAngle(uint8_t id, int32_t angle_deg)
 
     abs_angle = StepMotor_Abs32(angle_deg);
     steps = StepMotor_DegAngleToSteps(&g_stepMotorConfig[id], abs_angle);
+    /* 0U 表示角度小到换算不出一步；超过 INT32_MAX 则无法安全传给接口。 */
     if ((steps == 0U) || (steps > (uint32_t) INT32_MAX)) {
         if (steps > (uint32_t) INT32_MAX) {
             g_stepMotorHandle[id].state = STEP_MOTOR_STATE_ERROR;
@@ -549,6 +595,7 @@ void StepMotor_MoveAngle(uint8_t id, int32_t angle_deg)
         return;
     }
 
+    /* 角度大于等于 0 传入正步数（顺时针），负角度传入负步数。 */
     StepMotor_MoveSteps(
         id, (angle_deg >= 0) ? (int32_t) steps : -((int32_t) steps));
 }
@@ -562,11 +609,13 @@ void StepMotor_RunContinuous(uint8_t id, StepMotorDir dir)
     }
 
     handle = &g_stepMotorHandle[id];
+    /* 0 step/s 无法连续运行，按停止命令处理。 */
     if (handle->speed_steps_per_sec == 0U) {
         StepMotor_Stop(id);
         return;
     }
 
+    /* 剩余限位步数小于等于 0 表示该方向已不能继续运行。 */
     if (StepMotor_GetRemainingLimitSteps(id, dir) <= 0) {
         StepMotor_Stop(id);
         return;
@@ -574,6 +623,7 @@ void StepMotor_RunContinuous(uint8_t id, StepMotorDir dir)
 
     StepMotor_Enable(id);
     StepMotor_SetDir(id, dir);
+    /* 连续运行不按固定步数倒计时，remain_steps 使用 0 表示不限步数。 */
     handle->remain_steps = 0;
     handle->state = STEP_MOTOR_STATE_RUNNING;
     StepMotor_StartPwm(id);
@@ -589,6 +639,7 @@ void StepMotor_Stop(uint8_t id)
 
     handle = &g_stepMotorHandle[id];
     StepMotor_StopPwm(&g_stepMotorConfig[id]);
+    /* 主动停止时清零剩余步数，取消尚未完成的定长运动。 */
     handle->remain_steps = 0;
     handle->state = STEP_MOTOR_STATE_IDLE;
 }
@@ -622,6 +673,7 @@ bool StepMotor_IsBusy(uint8_t id)
 int32_t StepMotor_GetPositionSteps(uint8_t id)
 {
     if (!StepMotor_IsValidId(id)) {
+        /* 无效轴没有位置数据，约定返回 0 步。 */
         return 0;
     }
 
@@ -639,7 +691,9 @@ void StepMotor_ResetInitialPosition(uint8_t id)
     /* 只重置坐标系，不改变当前速度、限位和电机运行状态。 */
     primask = __get_PRIMASK();
     __disable_irq();
+    /* 位置写 0：把当前机械位置重新定义为角度坐标零点。 */
     g_stepMotorHandle[id].position_steps = 0;
+    /* PRIMASK 原值为 0U 表示进入临界区前中断处于使能状态。 */
     if (primask == 0U) {
         __enable_irq();
     }
@@ -649,6 +703,7 @@ void StepMotor_ResetInitialPositionAll(void)
 {
     uint8_t id;
 
+    /* 从 0 号 Yaw 轴开始，依次重置共 STEP_MOTOR_COUNT 个轴。 */
     for (id = 0U; id < STEP_MOTOR_COUNT; id++) {
         StepMotor_ResetInitialPosition(id);
     }
@@ -676,11 +731,13 @@ static void StepMotor_HandleTimerIrq(uint8_t id)
     case DL_TIMER_IIDX_LOAD:
         /* ISR 只做计步和停机判断，避免阻塞操作影响 PWM 节拍。 */
         if (handle->state == STEP_MOTOR_STATE_MOVING) {
+            /* 剩余步数小于等于 0 表示定长运动完成或状态异常。 */
             if ((handle->remain_steps <= 0) || !StepMotor_CanStep(id)) {
                 StepMotor_StopFromIsr(id);
             } else {
                 handle->remain_steps--;
                 StepMotor_UpdatePositionFromPulse(id);
+                /* 递减到 0 时最后一个脉冲已计入位置，随后立即停机。 */
                 if ((handle->remain_steps == 0) || !StepMotor_CanStep(id)) {
                     StepMotor_StopFromIsr(id);
                 }
