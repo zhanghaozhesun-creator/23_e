@@ -1,0 +1,29 @@
+# CCS managed-build output
+Debug/
+Release/
+
+# Compiler and linker artifacts
+*.o
+*.obj
+*.d
+*.d_raw
+*.out
+*.map
+*.hex
+*.bin
+*.opt
+*.genlibs
+*_linkInfo.xml
+Event.dot
+
+# Local editor and analysis state
+.clangd
+.vscode/
+.agents/
+.codex/
+.ccs-headless*/
+.verify-build/
+
+# OS files
+Thumbs.db
+.DS_Store
