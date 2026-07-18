@@ -29,6 +29,7 @@ typedef struct {
 typedef struct {
     PID_Controller yaw_pid;
     PID_Controller pitch_pid;
+    GimbalAngle angle_error;
     float min_effective_speed_deg_s;
     float max_speed_deg_s;
     GimbalControlMode mode;
@@ -51,6 +52,7 @@ void GimbalControl_Reset(GimbalControl *control);
 void GimbalControl_Stop(GimbalControl *control);
 void GimbalControl_ApplySpeed(
     GimbalControl *control, float yaw_speed_deg_s, float pitch_speed_deg_s);
+GimbalAngle GimbalControl_GetAngleError(const GimbalControl *control);
 
 void GimbalControl_UpdateAngle(GimbalControl *control, GimbalAngle target,
     GimbalAngle current, float dt_sec);

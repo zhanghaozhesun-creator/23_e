@@ -36,21 +36,29 @@ multiplier2.multiplyValue = 10;
 const mux8       = system.clockTree["HSCLKMUX"];
 mux8.inputSelect = "HSCLKMUX_SYSPLL0";
 
-GPIO1.$name                   = "STEPPER_YAW_GPIO";
+GPIO1.$name                         = "STEPPER_YAW_GPIO";
 GPIO1.associatedPins.create(4);
-GPIO1.associatedPins[0].$name = "YAW_DIR";
-GPIO1.associatedPins[1].$name = "YAW_DCY";
-GPIO1.associatedPins[2].$name = "YAW_SLP";
-GPIO1.associatedPins[3].$name = "YAW_RST";
+GPIO1.associatedPins[0].$name       = "YAW_DIR";
+GPIO1.associatedPins[0].pin.$assign = "PB8";
+GPIO1.associatedPins[1].$name       = "YAW_DCY";
+GPIO1.associatedPins[1].pin.$assign = "PA16";
+GPIO1.associatedPins[2].$name       = "YAW_SLP";
+GPIO1.associatedPins[2].pin.$assign = "PA15";
+GPIO1.associatedPins[3].$name       = "YAW_RST";
+GPIO1.associatedPins[3].pin.$assign = "PA14";
 
 const Board = scripting.addModule("/ti/driverlib/Board", {}, false);
 
-GPIO2.$name                   = "STEPPER_PITCH_GPIO";
+GPIO2.$name                         = "STEPPER_PITCH_GPIO";
 GPIO2.associatedPins.create(4);
-GPIO2.associatedPins[0].$name = "PITCH_DIR";
-GPIO2.associatedPins[1].$name = "PITCH_DCY";
-GPIO2.associatedPins[2].$name = "PITCH_SLP";
-GPIO2.associatedPins[3].$name = "PITCH_RST";
+GPIO2.associatedPins[0].$name       = "PITCH_DIR";
+GPIO2.associatedPins[0].pin.$assign = "PA7";
+GPIO2.associatedPins[1].$name       = "PITCH_DCY";
+GPIO2.associatedPins[1].pin.$assign = "PA8";
+GPIO2.associatedPins[2].$name       = "PITCH_SLP";
+GPIO2.associatedPins[2].pin.$assign = "PA9";
+GPIO2.associatedPins[3].$name       = "PITCH_RST";
+GPIO2.associatedPins[3].pin.$assign = "PB7";
 
 PWM1.$name                              = "STEPPER_YAW_PWM";
 PWM1.clockDivider                       = 8;
@@ -137,14 +145,6 @@ ProjectConfig.genDisable = true;
  * version of the tool will not impact the pinmux you originally saw.  These lines can be completely deleted in order to
  * re-solve from scratch.
  */
-GPIO1.associatedPins[0].pin.$suggestSolution = "PB13";
-GPIO1.associatedPins[1].pin.$suggestSolution = "PB15";
-GPIO1.associatedPins[2].pin.$suggestSolution = "PB16";
-GPIO1.associatedPins[3].pin.$suggestSolution = "PA14";
-Board.peripheral.$suggestSolution            = "DEBUGSS";
-Board.peripheral.swclkPin.$suggestSolution   = "PA20";
-Board.peripheral.swdioPin.$suggestSolution   = "PA19";
-GPIO2.associatedPins[0].pin.$suggestSolution = "PB14";
-GPIO2.associatedPins[1].pin.$suggestSolution = "PA15";
-GPIO2.associatedPins[2].pin.$suggestSolution = "PA16";
-GPIO2.associatedPins[3].pin.$suggestSolution = "PB17";
+Board.peripheral.$suggestSolution          = "DEBUGSS";
+Board.peripheral.swclkPin.$suggestSolution = "PA20";
+Board.peripheral.swdioPin.$suggestSolution = "PA19";

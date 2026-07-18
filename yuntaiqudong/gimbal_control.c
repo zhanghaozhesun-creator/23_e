@@ -103,6 +103,9 @@ static void GimbalControl_UpdateByAngleError(GimbalControl *control,
      * 此处令 target=0、current=-angle_error，因此 e=angle_error；
      * PID 输出 yaw_speed/pitch_speed 的单位为 deg/s。
      */
+    /* 保存死区处理前的两轴角度误差，供 UART_PC 实时遥测。 */
+    control->angle_error.yaw = yaw_error_deg;
+    control->angle_error.pitch = pitch_error_deg;
     yaw_speed = PID_Update(&control->yaw_pid, 0.0f, -yaw_error_deg, dt_sec);
     pitch_speed =
         PID_Update(&control->pitch_pid, 0.0f, -pitch_error_deg, dt_sec);
@@ -122,6 +125,9 @@ void GimbalControl_Init(GimbalControl *control)
         &control->yaw_pid, GIMBAL_CONTROL_DEFAULT_DEADBAND_DEG);
     PID_SetDeadband(
         &control->pitch_pid, GIMBAL_CONTROL_DEFAULT_DEADBAND_DEG);
+    /* 两个 0.0f 表示上电后尚未获得 Yaw/Pitch 角度误差。 */
+    control->angle_error.yaw = 0.0f;
+    control->angle_error.pitch = 0.0f;
     control->min_effective_speed_deg_s =
         GIMBAL_CONTROL_DEFAULT_MIN_SPEED_DEG_S;
     control->max_speed_deg_s = GIMBAL_CONTROL_DEFAULT_MAX_SPEED_DEG_S;
@@ -236,6 +242,20 @@ void GimbalControl_ApplySpeed(
         &control->pitch_last_dir, &control->pitch_running);
 }
 
+GimbalAngle GimbalControl_GetAngleError(const GimbalControl *control)
+{
+    GimbalAngle error;
+
+    /* 控制对象无效时，两个通道均返回 0.0°。 */
+    error.yaw = 0.0f;
+    error.pitch = 0.0f;
+    if (control != 0) {
+        error = control->angle_error;
+    }
+
+    return error;
+}
+
 void GimbalControl_UpdateAngle(GimbalControl *control, GimbalAngle target,
     GimbalAngle current, float dt_sec)
 {
@@ -332,13 +352,13 @@ void GimbalControl_UpdateAimDistanceError(GimbalControl *control,
      * MaixCAM2 误差定义为“目标点 - 激光点”，目标平面距离为 1050 mm：
      *   yaw_error   = atan2(error_x_mm, 1050) * 180/π
      *   pitch_error = -atan2(error_y_mm, 1050) * 180/π
-     * 屏幕 Y 轴向下为正，因此 Pitch 沿用像素瞄准接口的反号约定。
+     * 在此处修改pitch和yaw两个轴的正反转方向
      */
     yaw_error_deg =
         atan2f(error_x_mm, GIMBAL_CONTROL_TARGET_DISTANCE_MM) *
         GIMBAL_CONTROL_RAD_TO_DEG;
     pitch_error_deg =
-        -atan2f(error_y_mm, GIMBAL_CONTROL_TARGET_DISTANCE_MM) *
+        atan2f(error_y_mm, GIMBAL_CONTROL_TARGET_DISTANCE_MM) *
         GIMBAL_CONTROL_RAD_TO_DEG;
 
     GimbalControl_UpdateByAngleError(
