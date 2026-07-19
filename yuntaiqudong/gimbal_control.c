@@ -7,12 +7,13 @@
  * 本文件的通用数值约定：指针与 0 比较表示空指针检查；速度 0.0f
  * 表示停机命令；有符号速度大于等于 0 表示顺时针，小于 0 表示逆时针。
  */
-/* 低于 1 deg/s 的命令视为无效，以避免电机在低频下抖动或失步。 */
+/* 死区外的非零命令至少提升到 1 deg/s，保证步进电机能够稳定执行。 */
 #define GIMBAL_CONTROL_DEFAULT_MIN_SPEED_DEG_S   (1.0f)
-/* PID 角速度命令的默认软件上限为 360 deg/s，即每秒 1 圈。 */
-#define GIMBAL_CONTROL_DEFAULT_MAX_SPEED_DEG_S   (360.0f)
-/* 两轴 PID 的初始角度死区为 0.5°，死区内误差按 0 处理。 */
-#define GIMBAL_CONTROL_DEFAULT_DEADBAND_DEG      (0.5f)
+/* 1 MHz 定时器、800 tick 最短周期下的可靠软件上限取 70 deg/s。 */
+#define GIMBAL_CONTROL_DEFAULT_MAX_SPEED_DEG_S   (70.0f)
+/* 进入此范围时停轴；停轴后超过启动阈值才重新动作，避免中心附近抖动。 */
+#define GIMBAL_CONTROL_DEFAULT_STOP_DEADBAND_DEG  (0.15f)
+#define GIMBAL_CONTROL_DEFAULT_START_DEADBAND_DEG (0.25f)
 /* 激光笔到目标平面的水平距离固定按 1050 mm（1.05 m）计算。 */
 #define GIMBAL_CONTROL_TARGET_DISTANCE_MM        (1050.0f)
 /* 弧度乘以 180/π 后转换为角度。 */
@@ -38,20 +39,16 @@ static float GimbalControl_Clamp(
     return value;
 }
 
-static uint32_t GimbalControl_ToSpeedUint(float speed_deg_s)
+static float GimbalControl_GetActiveError(float error_deg, bool running,
+    float stop_deadband_deg, float start_deadband_deg)
 {
-    /* 非正速度统一转换为 0，底层把 0 解释为停止。 */
-    if (speed_deg_s <= 0.0f) {
-        return 0U;
+    float threshold = running ? stop_deadband_deg : start_deadband_deg;
+
+    if (GimbalControl_Abs(error_deg) <= threshold) {
+        return 0.0f;
     }
 
-    /* 超出 uint32_t 范围时饱和到 UINT32_MAX，防止强制转换回绕。 */
-    if (speed_deg_s >= (float) UINT32_MAX) {
-        return UINT32_MAX;
-    }
-
-    /* 正数加 0.5f 后取整，实现四舍五入而不是直接截断。 */
-    return (uint32_t) (speed_deg_s + 0.5f);
+    return error_deg;
 }
 
 static void GimbalControl_ApplyAxisSpeed(uint8_t id, float speed_deg_s,
@@ -65,14 +62,15 @@ static void GimbalControl_ApplyAxisSpeed(uint8_t id, float speed_deg_s,
         *running = false;
     }
 
-    if (abs_speed < min_speed_deg_s) {
+    if (abs_speed <= 0.0f) {
         StepMotor_Stop(id);
         *running = false;
         return;
     }
 
+    /* 死区外的非零命令至少提升到电机可稳定执行的 1 deg/s。 */
     abs_speed = GimbalControl_Clamp(abs_speed, min_speed_deg_s, max_speed_deg_s);
-    /* 0.0f 归入顺时针分支；实际零速已被最小有效速度判断拦截。 */
+    /* 零速已在上方处理，此处只根据符号选择实际运动方向。 */
     dir = (speed_deg_s >= 0.0f) ? STEP_MOTOR_DIR_CW : STEP_MOTOR_DIR_CCW;
 
     /* 反向前先停 PWM，避免底层忙状态下拒绝修改 DIR。 */
@@ -82,11 +80,11 @@ static void GimbalControl_ApplyAxisSpeed(uint8_t id, float speed_deg_s,
     }
 
     if ((*running) && (*last_dir == dir)) {
-        StepMotor_SetSpeedDeg(id, GimbalControl_ToSpeedUint(abs_speed));
+        StepMotor_SetSpeedDeg(id, abs_speed);
         return;
     }
 
-    StepMotor_SetSpeedDeg(id, GimbalControl_ToSpeedUint(abs_speed));
+    StepMotor_SetSpeedDeg(id, abs_speed);
     StepMotor_RunContinuous(id, dir);
     *last_dir = dir;
     *running = StepMotor_IsBusy(id);
@@ -95,6 +93,8 @@ static void GimbalControl_ApplyAxisSpeed(uint8_t id, float speed_deg_s,
 static void GimbalControl_UpdateByAngleError(GimbalControl *control,
     float yaw_error_deg, float pitch_error_deg, float dt_sec)
 {
+    float active_yaw_error_deg;
+    float active_pitch_error_deg;
     float yaw_speed;
     float pitch_speed;
 
@@ -106,9 +106,29 @@ static void GimbalControl_UpdateByAngleError(GimbalControl *control,
     /* 保存死区处理前的两轴角度误差，供 UART_PC 实时遥测。 */
     control->angle_error.yaw = yaw_error_deg;
     control->angle_error.pitch = pitch_error_deg;
-    yaw_speed = PID_Update(&control->yaw_pid, 0.0f, -yaw_error_deg, dt_sec);
-    pitch_speed =
-        PID_Update(&control->pitch_pid, 0.0f, -pitch_error_deg, dt_sec);
+    active_yaw_error_deg = GimbalControl_GetActiveError(yaw_error_deg,
+        control->yaw_running, control->stop_deadband_deg,
+        control->start_deadband_deg);
+    active_pitch_error_deg = GimbalControl_GetActiveError(pitch_error_deg,
+        control->pitch_running, control->stop_deadband_deg,
+        control->start_deadband_deg);
+
+    if (active_yaw_error_deg == 0.0f) {
+        PID_Reset(&control->yaw_pid);
+        yaw_speed = 0.0f;
+    } else {
+        yaw_speed = PID_Update(
+            &control->yaw_pid, 0.0f, -active_yaw_error_deg, dt_sec);
+    }
+
+    if (active_pitch_error_deg == 0.0f) {
+        PID_Reset(&control->pitch_pid);
+        pitch_speed = 0.0f;
+    } else {
+        pitch_speed = PID_Update(
+            &control->pitch_pid, 0.0f, -active_pitch_error_deg, dt_sec);
+    }
+
     GimbalControl_ApplySpeed(control, yaw_speed, pitch_speed);
 }
 
@@ -121,16 +141,19 @@ void GimbalControl_Init(GimbalControl *control)
     /* 三个 0.0f 分别表示 Kp、Ki、Kd 初始均关闭，由 main.c 随后写入。 */
     PID_Init(&control->yaw_pid, 0.0f, 0.0f, 0.0f);
     PID_Init(&control->pitch_pid, 0.0f, 0.0f, 0.0f);
-    PID_SetDeadband(
-        &control->yaw_pid, GIMBAL_CONTROL_DEFAULT_DEADBAND_DEG);
-    PID_SetDeadband(
-        &control->pitch_pid, GIMBAL_CONTROL_DEFAULT_DEADBAND_DEG);
+    /* 启停迟滞在云台层处理，通用 PID 内部死区保持为 0。 */
+    PID_SetDeadband(&control->yaw_pid, 0.0f);
+    PID_SetDeadband(&control->pitch_pid, 0.0f);
     /* 两个 0.0f 表示上电后尚未获得 Yaw/Pitch 角度误差。 */
     control->angle_error.yaw = 0.0f;
     control->angle_error.pitch = 0.0f;
     control->min_effective_speed_deg_s =
         GIMBAL_CONTROL_DEFAULT_MIN_SPEED_DEG_S;
     control->max_speed_deg_s = GIMBAL_CONTROL_DEFAULT_MAX_SPEED_DEG_S;
+    control->stop_deadband_deg =
+        GIMBAL_CONTROL_DEFAULT_STOP_DEADBAND_DEG;
+    control->start_deadband_deg =
+        GIMBAL_CONTROL_DEFAULT_START_DEADBAND_DEG;
     PID_SetOutputLimit(
         &control->yaw_pid, -control->max_speed_deg_s, control->max_speed_deg_s);
     PID_SetOutputLimit(&control->pitch_pid, -control->max_speed_deg_s,
@@ -196,12 +219,27 @@ void GimbalControl_SetSpeedLimit(
 
 void GimbalControl_SetDeadband(GimbalControl *control, float deadband_deg)
 {
+    GimbalControl_SetDeadbandHysteresis(
+        control, deadband_deg, deadband_deg);
+}
+
+void GimbalControl_SetDeadbandHysteresis(GimbalControl *control,
+    float stop_deadband_deg, float start_deadband_deg)
+{
     if (control == 0) {
         return;
     }
 
-    PID_SetDeadband(&control->yaw_pid, deadband_deg);
-    PID_SetDeadband(&control->pitch_pid, deadband_deg);
+    stop_deadband_deg = GimbalControl_Abs(stop_deadband_deg);
+    start_deadband_deg = GimbalControl_Abs(start_deadband_deg);
+    if (start_deadband_deg < stop_deadband_deg) {
+        start_deadband_deg = stop_deadband_deg;
+    }
+
+    control->stop_deadband_deg = stop_deadband_deg;
+    control->start_deadband_deg = start_deadband_deg;
+    PID_SetDeadband(&control->yaw_pid, 0.0f);
+    PID_SetDeadband(&control->pitch_pid, 0.0f);
 }
 
 void GimbalControl_Reset(GimbalControl *control)

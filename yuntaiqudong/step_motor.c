@@ -184,18 +184,30 @@ static uint32_t StepMotor_SpeedToPeriod(
 }
 
 static uint32_t StepMotor_DegSpeedToSteps(
-    const StepMotorConfig *config, uint32_t speed_deg_per_sec)
+    const StepMotorConfig *config, float speed_deg_per_sec)
 {
+    float max_speed_deg_per_sec;
+
+    if (speed_deg_per_sec <= 0.0f) {
+        return 0U;
+    }
+
+    max_speed_deg_per_sec =
+        ((float) UINT32_MAX * (float) STEP_MOTOR_DEG_PER_REV) /
+        (float) config->steps_per_rev;
+    if (speed_deg_per_sec >= max_speed_deg_per_sec) {
+        return UINT32_MAX;
+    }
+
     /*
      * PID 角速度输出转换为步进脉冲频率：
      * steps_per_sec = round(speed_deg_per_sec * steps_per_rev / 360)。
-     * 当前默认 steps_per_rev=6400，例如 90 deg/s 对应 1600 steps/s。
-     * 分子加 360/2=180，用于正整数除法的四舍五入。
+     * 保留浮点角速度直到本层，避免先把 1.49 deg/s 量化成 1 deg/s；
+     * ISR 仍然只处理最终得到的整数步频。
      */
-    return (uint32_t) (((uint64_t) speed_deg_per_sec *
-                          config->steps_per_rev +
-                      (STEP_MOTOR_DEG_PER_REV / 2U)) /
-                     STEP_MOTOR_DEG_PER_REV);
+    return (uint32_t) ((speed_deg_per_sec * (float) config->steps_per_rev /
+                           (float) STEP_MOTOR_DEG_PER_REV) +
+                       0.5f);
 }
 
 static uint32_t StepMotor_DegAngleToSteps(
@@ -470,7 +482,7 @@ void StepMotor_SetSpeed(uint8_t id, uint32_t speed_steps_per_sec)
     }
 }
 
-void StepMotor_SetSpeedDeg(uint8_t id, uint32_t speed_deg_per_sec)
+void StepMotor_SetSpeedDeg(uint8_t id, float speed_deg_per_sec)
 {
     if (!StepMotor_IsValidId(id)) {
         return;
