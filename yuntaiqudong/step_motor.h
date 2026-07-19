@@ -31,10 +31,10 @@ void StepMotor_InitAll(void);
 void StepMotor_Enable(uint8_t id);
 void StepMotor_Disable(uint8_t id);
 
-/* 步频和限位使用整数；角速度只在任务上下文换算，ISR 不执行浮点运算。 */
+/* 速度和限位都使用整数单位，避免在中断中引入浮点运算。 */
 void StepMotor_SetDir(uint8_t id, StepMotorDir dir);
 void StepMotor_SetSpeed(uint8_t id, uint32_t speed_steps_per_sec);
-void StepMotor_SetSpeedDeg(uint8_t id, float speed_deg_per_sec);
+void StepMotor_SetSpeedDeg(uint8_t id, uint32_t speed_deg_per_sec);
 void StepMotor_SetLimitDeg(uint8_t id, StepMotorDir dir, uint16_t limit_deg);
 uint16_t StepMotor_GetLimitDeg(uint8_t id, StepMotorDir dir);
 

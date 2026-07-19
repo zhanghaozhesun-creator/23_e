@@ -125,7 +125,7 @@ typedef struct {
  * PID 参数与步进电机转速的关系：
  *   e              = target_angle - current_angle                  [deg]
  *   u              = Kp*e + Ki*∫e dt + Kd*de/dt                  [deg/s]
- *   speed_deg_s    = 0，若误差进入停止死区；否则为
+ *   speed_deg_s    = 0，若 |u| < min_speed_deg_s；否则为
  *                    clamp(|u|, min_speed_deg_s, max_speed_deg_s) [deg/s]
  *   steps_per_sec  = round(speed_deg_s * steps_per_rev / 360)     [step/s]
  *   actual_deg_s   = steps_per_sec * 360 / steps_per_rev          [deg/s]
@@ -143,18 +143,19 @@ typedef struct {
  * 以角度 deg 为输入、角速度 deg/s 为输出时，Kp 单位为 1/s，
  * Ki 单位为 1/s^2，Kd 为无量纲。
  *
- * 两轴定时器均配置为 1 MHz；定时器还会限制实际最大转速：
+ * 定时器还会限制实际最大转速：
  *   max_steps_per_sec = timer_clock_hz / min_period_ticks
- * 当前 min_period_ticks=800：两轴约 1250 step/s（70.31 deg/s）。
- * 1 deg/s 对应 18 step/s、周期约 55556 tick，未超过 16 位上限。
+ * 当前 min_period_ticks=800：Yaw 约 3125 step/s（175.78 deg/s），
+ * Pitch 约 6250 step/s（351.56 deg/s）。即使 PID 输出设为 360 deg/s，
+ * 底层也会按各轴定时器能力进行限幅。
  *
- * 当前两轴 Kp 均为 1.0，Ki、Kd 均为 0.0；实际调参时建议先调整 Kp，
+ * 当前两轴 Kp 均为 2.0，Ki、Kd 均为 0.0；实际调参时建议先调整 Kp，
  * 再逐步加入 Kd，最后按需要加入 Ki。
  */
-#define GIMBAL_YAW_PID_KP             (1.0f)
+#define GIMBAL_YAW_PID_KP             (0.01f)
 #define GIMBAL_YAW_PID_KI             (0.0f)
 #define GIMBAL_YAW_PID_KD             (0.0f)
-#define GIMBAL_PITCH_PID_KP           (1.0f)
+#define GIMBAL_PITCH_PID_KP           (0.01f)
 #define GIMBAL_PITCH_PID_KI           (0.0f)
 #define GIMBAL_PITCH_PID_KD           (0.0f)
 
