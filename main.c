@@ -148,13 +148,13 @@ typedef struct {
  * 当前 min_period_ticks=800：两轴约 1250 step/s（70.31 deg/s）。
  * 1 deg/s 对应 18 step/s、周期约 55556 tick，未超过 16 位上限。
  *
- * 当前两轴 Kp 均为 1.0，Ki、Kd 均为 0.0；实际调参时建议先调整 Kp，
+ * 当前两轴 Kp 均为 0.5，Ki、Kd 均为 0.0；实际调参时建议先调整 Kp，
  * 再逐步加入 Kd，最后按需要加入 Ki。
  */
-#define GIMBAL_YAW_PID_KP             (1.0f)
+#define GIMBAL_YAW_PID_KP             (0.5f)
 #define GIMBAL_YAW_PID_KI             (0.0f)
 #define GIMBAL_YAW_PID_KD             (0.0f)
-#define GIMBAL_PITCH_PID_KP           (1.0f)
+#define GIMBAL_PITCH_PID_KP           (0.5f)
 #define GIMBAL_PITCH_PID_KI           (0.0f)
 #define GIMBAL_PITCH_PID_KD           (0.0f)
 
