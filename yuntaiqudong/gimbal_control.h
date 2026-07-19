@@ -32,6 +32,8 @@ typedef struct {
     GimbalAngle angle_error;
     float min_effective_speed_deg_s;
     float max_speed_deg_s;
+    float stop_deadband_deg;
+    float start_deadband_deg;
     GimbalControlMode mode;
     StepMotorDir yaw_last_dir;
     StepMotorDir pitch_last_dir;
@@ -48,6 +50,9 @@ void GimbalControl_SetPitchPid(
 void GimbalControl_SetSpeedLimit(
     GimbalControl *control, float min_speed_deg_s, float max_speed_deg_s);
 void GimbalControl_SetDeadband(GimbalControl *control, float deadband_deg);
+void GimbalControl_SetDeadbandHysteresis(
+    GimbalControl *control, float stop_deadband_deg,
+    float start_deadband_deg);
 void GimbalControl_Reset(GimbalControl *control);
 void GimbalControl_Stop(GimbalControl *control);
 void GimbalControl_ApplySpeed(
