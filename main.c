@@ -27,7 +27,7 @@
 
 /* Kernel includes. */
 #include "FreeRTOS.h"
-#include "semphr.h"
+#include "queue.h"
 #include "task.h"
 
 /* Standard C includes. */
@@ -74,6 +74,16 @@
 #define TELEMETRY_FRAME_BUFFER_SIZE   (64U)
 /* 单条电脑命令回复最多使用 96 字节。 */
 #define PC_REPLY_FRAME_BUFFER_SIZE    (96U)
+/* UART_PC 独立发送任务使用 256 个栈字，当前端口下约为 1024 字节。 */
+#define UART_PC_TX_TASK_STACK_WORDS   (256U)
+/* 发送任务低于控制和遥测任务，避免轮询 TX 状态影响 500 Hz 控制。 */
+#define UART_PC_TX_TASK_PRIORITY      (tskIDLE_PRIORITY + 1U)
+/* 静态发送队列最多缓存 8 个完整文本帧。 */
+#define UART_PC_TX_QUEUE_DEPTH        (8U)
+/* 单个队列项按最长电脑命令回复预留 96 字节。 */
+#define UART_PC_TX_FRAME_MAX_BYTES    (PC_REPLY_FRAME_BUFFER_SIZE)
+/* TX 连续 20 ms 没有成功写入新字节时判定 UART 异常。 */
+#define UART_PC_TX_TIMEOUT_MS         (20U)
 
 /* 视觉串口固定帧的第 1 个帧头字节为 0xAA。 */
 #define VISION_FRAME_HEADER_FIRST     (0xAAU)
@@ -93,6 +103,11 @@
 #define VISION_TRACK_STATE_VALID      (1U)
 /* 自动跟踪状态 2 表示最新正确帧要求停止或误差无效。 */
 #define VISION_TRACK_STATE_NO_DATA    (2U)
+
+typedef struct {
+    uint16_t length;
+    uint8_t data[UART_PC_TX_FRAME_MAX_BYTES];
+} UartPcTxFrame;
 
 /* Yaw 顺、逆时针均最多偏离零点 3600°，即各 10 圈。 */
 #define YAW_CW_LIMIT_DEG              (3600U)
@@ -137,10 +152,10 @@
  * 当前两轴 Kp 均为 2.0，Ki、Kd 均为 0.0；实际调参时建议先调整 Kp，
  * 再逐步加入 Kd，最后按需要加入 Ki。
  */
-#define GIMBAL_YAW_PID_KP             (1.0f)
+#define GIMBAL_YAW_PID_KP             (0.01f)
 #define GIMBAL_YAW_PID_KI             (0.0f)
 #define GIMBAL_YAW_PID_KD             (0.0f)
-#define GIMBAL_PITCH_PID_KP           (1.0f)
+#define GIMBAL_PITCH_PID_KP           (0.01f)
 #define GIMBAL_PITCH_PID_KI           (0.0f)
 #define GIMBAL_PITCH_PID_KD           (0.0f)
 
@@ -148,8 +163,12 @@ static StaticTask_t g_gimbalTaskTcb;
 static StackType_t g_gimbalTaskStack[GIMBAL_TASK_STACK_WORDS];
 static StaticTask_t g_telemetryTaskTcb;
 static StackType_t g_telemetryTaskStack[TELEMETRY_TASK_STACK_WORDS];
-static StaticSemaphore_t g_uartPcTxMutexBuffer;
-static SemaphoreHandle_t g_uartPcTxMutex;
+static StaticTask_t g_uartPcTxTaskTcb;
+static StackType_t g_uartPcTxTaskStack[UART_PC_TX_TASK_STACK_WORDS];
+static StaticQueue_t g_uartPcTxQueueBuffer;
+static uint8_t g_uartPcTxQueueStorage[
+    UART_PC_TX_QUEUE_DEPTH * sizeof(UartPcTxFrame)];
+static QueueHandle_t g_uartPcTxQueue;
 static TaskHandle_t g_gimbalTaskHandle;
 static GimbalControl g_gimbalControl;
 static uint8_t g_visionFrame[VISION_FRAME_LENGTH];
@@ -167,6 +186,10 @@ static volatile uint8_t g_visionTrackingState;
 /* valid=0 或 stop=1 时置位，直到控制任务确实执行一次停轴。 */
 static volatile uint8_t g_visionTrackingStopPending;
 static bool g_autoTrackingEnabled;
+/* 供调试器观察：队列已满或帧过长时累计丢弃帧数。 */
+static volatile uint32_t g_uartPcTxDroppedFrameCount;
+/* 供调试器观察：UART 连续 20 ms 无发送进展的累计次数。 */
+static volatile uint32_t g_uartPcTxTimeoutCount;
 
 static void UartPcReplyCommand(uint8_t command, const char *action);
 static void UartPcReplyReady(void);
@@ -300,19 +323,66 @@ static void GimbalHandlePcCommand(uint8_t command)
 
 static void UartPcSendBuffer(const char *buffer, uint32_t length)
 {
+    UartPcTxFrame frame;
     uint32_t index;
 
-    if ((g_uartPcTxMutex == NULL) ||
-        (xSemaphoreTake(g_uartPcTxMutex, portMAX_DELAY) != pdTRUE)) {
+    if ((buffer == NULL) || (length == 0U) ||
+        (length > UART_PC_TX_FRAME_MAX_BYTES) ||
+        (g_uartPcTxQueue == NULL)) {
+        g_uartPcTxDroppedFrameCount++;
         return;
     }
 
+    frame.length = (uint16_t) length;
     for (index = 0U; index < length; index++) {
-        DL_UART_Main_transmitDataBlocking(
-            UART_PC_INST, (uint8_t) buffer[index]);
+        frame.data[index] = (uint8_t) buffer[index];
     }
 
-    (void) xSemaphoreGive(g_uartPcTxMutex);
+    /* 发送方只复制入队，队列满时丢帧但绝不阻塞控制或遥测任务。 */
+    if (xQueueSend(g_uartPcTxQueue, &frame, 0U) != pdPASS) {
+        g_uartPcTxDroppedFrameCount++;
+    }
+}
+
+static void UartPcTxTask(void *argument)
+{
+    UartPcTxFrame frame;
+    TickType_t last_progress_time;
+    TickType_t current_time;
+    uint32_t index;
+
+    (void) argument;
+
+    for (;;) {
+        if (xQueueReceive(
+                g_uartPcTxQueue, &frame, portMAX_DELAY) != pdPASS) {
+            continue;
+        }
+
+        index = 0U;
+        last_progress_time = xTaskGetTickCount();
+        while (index < (uint32_t) frame.length) {
+            if (DL_UART_Main_transmitDataCheck(
+                    UART_PC_INST, frame.data[index])) {
+                index++;
+                last_progress_time = xTaskGetTickCount();
+                continue;
+            }
+
+            current_time = xTaskGetTickCount();
+            if ((current_time - last_progress_time) >=
+                pdMS_TO_TICKS(UART_PC_TX_TIMEOUT_MS)) {
+                /* 超时后丢弃当前帧并重新使能 UART，后续队列仍可继续运行。 */
+                g_uartPcTxTimeoutCount++;
+                DL_UART_Main_disable(UART_PC_INST);
+                DL_UART_Main_enable(UART_PC_INST);
+                break;
+            }
+
+            /* 非阻塞检查失败时主动让出 CPU，等待硬件移出 TX 数据。 */
+            taskYIELD();
+        }
+    }
 }
 
 static void UartPcReplyReady(void)
@@ -548,11 +618,14 @@ static void GimbalTask(void *argument)
 int main(void)
 {
     TaskHandle_t telemetry_task_handle;
+    TaskHandle_t uart_pc_tx_task_handle;
 
     SYSCFG_DL_init();
 
-    /* UART_PC 的命令回复和 50 Hz 遥测共用同一个发送互斥量。 */
-    g_uartPcTxMutex = xSemaphoreCreateMutexStatic(&g_uartPcTxMutexBuffer);
+    /* 命令回复和 50 Hz 遥测只入队，由 UART_PC TX 任务顺序发送。 */
+    g_uartPcTxQueue = xQueueCreateStatic(UART_PC_TX_QUEUE_DEPTH,
+        sizeof(UartPcTxFrame), g_uartPcTxQueueStorage,
+        &g_uartPcTxQueueBuffer);
 
     g_gimbalTaskHandle = xTaskCreateStatic(GimbalTask, "Gimbal",
         GIMBAL_TASK_STACK_WORDS, NULL, GIMBAL_TASK_PRIORITY,
@@ -560,8 +633,12 @@ int main(void)
     telemetry_task_handle = xTaskCreateStatic(TelemetryTask, "Telemetry",
         TELEMETRY_TASK_STACK_WORDS, NULL, TELEMETRY_TASK_PRIORITY,
         g_telemetryTaskStack, &g_telemetryTaskTcb);
-    if ((g_uartPcTxMutex == NULL) || (g_gimbalTaskHandle == NULL) ||
-        (telemetry_task_handle == NULL)) {
+    uart_pc_tx_task_handle = xTaskCreateStatic(UartPcTxTask, "UartPcTx",
+        UART_PC_TX_TASK_STACK_WORDS, NULL, UART_PC_TX_TASK_PRIORITY,
+        g_uartPcTxTaskStack, &g_uartPcTxTaskTcb);
+    if ((g_uartPcTxQueue == NULL) || (g_gimbalTaskHandle == NULL) ||
+        (telemetry_task_handle == NULL) ||
+        (uart_pc_tx_task_handle == NULL)) {
         GimbalEnterSafeState();
         for (;;) {
         }

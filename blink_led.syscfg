@@ -62,9 +62,9 @@ GPIO2.associatedPins[3].pin.$assign = "PB7";
 
 PWM1.$name                              = "STEPPER_YAW_PWM";
 PWM1.clockDivider                       = 8;
-PWM1.clockPrescale                      = 2;
 PWM1.timerCount                         = 10000;
 PWM1.interrupts                         = ["LOAD_EVENT"];
+PWM1.clockPrescale                      = 5;
 PWM1.peripheral.$assign                 = "TIMG0";
 PWM1.peripheral.ccp0Pin.$assign         = "PA12";
 PWM1.peripheral.ccp1Pin.$assign         = "PA13";
@@ -84,9 +84,9 @@ PWM1.ccp1PinConfig.$name                = "ti_driverlib_gpio_GPIOPinGeneric5";
 
 PWM2.$name                              = "STEPPER_PITCH_PWM";
 PWM2.clockDivider                       = 8;
-PWM2.clockPrescale                      = 2;
 PWM2.timerCount                         = 10000;
 PWM2.interrupts                         = ["LOAD_EVENT"];
+PWM2.clockPrescale                      = 5;
 PWM2.peripheral.$assign                 = "TIMG6";
 PWM2.peripheral.ccp0Pin.$assign         = "PB2";
 PWM2.peripheral.ccp1Pin.$assign         = "PB3";
